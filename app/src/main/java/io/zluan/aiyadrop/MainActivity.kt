@@ -30,12 +30,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.zluan.aiyadrop.ui.theme.AiyaDropTheme
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import android.graphics.Bitmap
+import android.graphics.Color
 
 class MainActivity : ComponentActivity() {
     private var webServer: LocalWebServer? = null
@@ -131,6 +139,21 @@ class MainActivity : ComponentActivity() {
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
+                    val wifiQrText = remember(ssid, password) {
+                        // WIFI QR code format
+                        "WIFI:T:WPA;S:$ssid;P:$password;;"
+                    }
+                    val qrBitmap = remember(wifiQrText) {
+                        generateQrCodeBitmap(wifiQrText, 512)
+                    }
+                    if (qrBitmap != null) {
+                        androidx.compose.foundation.layout.Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(bitmap = qrBitmap.asImageBitmap(), contentDescription = "Wi-Fi QR")
+                        }
+                    }
                     androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(8.dp))
                     Button(onClick = {
                         isWorking = true
@@ -241,6 +264,29 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             Toast.makeText(this, "Hotspot error: ${t.message}", Toast.LENGTH_SHORT).show()
         }
+    }
+}
+
+private fun generateQrCodeBitmap(text: String, size: Int): Bitmap? {
+    return try {
+        val hints = mapOf(
+            EncodeHintType.MARGIN to 1
+        )
+        val bitMatrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
+        val width = bitMatrix.width
+        val height = bitMatrix.height
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) {
+            val offset = y * width
+            for (x in 0 until width) {
+                pixels[offset + x] = if (bitMatrix.get(x, y)) Color.BLACK else Color.WHITE
+            }
+        }
+        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+            setPixels(pixels, 0, width, 0, 0, width, height)
+        }
+    } catch (_: Throwable) {
+        null
     }
 }
 
