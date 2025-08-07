@@ -13,13 +13,15 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -64,7 +66,8 @@ class MainActivity : ComponentActivity() {
         var ssid by remember { mutableStateOf("") }
         var password by remember { mutableStateOf("") }
         var urlHost by remember { mutableStateOf("192.168.43.1") }
-        var isStarting by remember { mutableStateOf(false) }
+        var isWorking by remember { mutableStateOf(false) }
+        var workingText by remember { mutableStateOf("") }
         val port = 8765
         val dir = File(cacheDir, "aiyadrop").apply { mkdirs() }
 
@@ -77,11 +80,11 @@ class MainActivity : ComponentActivity() {
                     findHotspotIpAddress()?.let { urlHost = it }
                     startServerIfNeeded(dir, port)
                     started = true
-                    isStarting = false
+                    isWorking = false
                 }
             } else {
                 Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
-                isStarting = false
+                isWorking = false
             }
         }
 
@@ -93,7 +96,7 @@ class MainActivity : ComponentActivity() {
         }
 
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-            if (isStarting) {
+            if (isWorking) {
                 androidx.compose.foundation.layout.Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -101,37 +104,71 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(64.dp))
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .padding(horizontal = 24.dp)
+                            .fillMaxWidth()
+                            .size(height = 8.dp, width = 0.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
                     androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(16.dp))
-                    Text("Starting hotspot and server…")
+                    Text(workingText.ifBlank { "Working…" })
                 }
             } else if (started) {
-                Greeting(
-                    name = "SSID: $ssid\nPassword: $password\nOpen: http://$urlHost:$port",
-                    modifier = Modifier.padding(innerPadding)
-                )
-                Button(onClick = {
-                    stopHotspotAndServer()
-                    started = false
-                    ssid = ""; password = ""
-                }, modifier = Modifier.padding(innerPadding)) {
-                    Text("Stop server")
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .padding(horizontal = 16.dp, vertical = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Hotspot ready", style = MaterialTheme.typography.titleMedium)
+                    Text("SSID: $ssid", style = MaterialTheme.typography.bodyMedium)
+                    Text("Password: $password", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Open: http://$urlHost:$port",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(8.dp))
+                    Button(onClick = {
+                        isWorking = true
+                        workingText = "Stopping server…"
+                        stopHotspotAndServer()
+                        started = false
+                        ssid = ""; password = ""
+                        isWorking = false
+                    }) {
+                        Text("Stop server")
+                    }
                 }
             } else {
-                Button(onClick = {
-                    val perms = buildPermissions()
-                    if (hasAllPermissions(perms)) {
-                        isStarting = true
-                        startHotspotAndServer(onHotspot = { s, p ->
-                            ssid = s; password = p; started = true
-                            isStarting = false
-                        }, dir = dir, port = port)
-                    } else {
-                        isStarting = true
-                        permLauncher.launch(perms)
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .padding(horizontal = 16.dp, vertical = 24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                ) {
+                    Button(onClick = {
+                        val perms = buildPermissions()
+                        if (hasAllPermissions(perms)) {
+                            isWorking = true
+                            workingText = "Starting hotspot and server…"
+                            startHotspotAndServer(onHotspot = { s, p ->
+                                ssid = s; password = p; started = true
+                                isWorking = false
+                            }, dir = dir, port = port)
+                        } else {
+                            isWorking = true
+                            workingText = "Starting hotspot and server…"
+                            permLauncher.launch(perms)
+                        }
+                    }) {
+                        Text("Start server")
                     }
-                }, modifier = Modifier.padding(innerPadding)) {
-                    Text("Start server")
                 }
             }
         }
