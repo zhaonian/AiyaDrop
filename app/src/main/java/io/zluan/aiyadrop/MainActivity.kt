@@ -15,6 +15,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -118,7 +121,7 @@ class MainActivity : ComponentActivity() {
 
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
             if (isWorking) {
-                androidx.compose.foundation.layout.Column(
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding),
@@ -133,11 +136,11 @@ class MainActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant
                     )
-                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.size(16.dp))
                     Text(workingText.ifBlank { "Working…" })
                 }
             } else if (started) {
-                androidx.compose.foundation.layout.Column(
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
@@ -156,15 +159,33 @@ class MainActivity : ComponentActivity() {
                         // WIFI QR code format
                         "WIFI:T:WPA;S:$ssid;P:$password;;"
                     }
-                    val qrBitmap = remember(wifiQrText) {
-                        generateQrCodeBitmap(wifiQrText, 512)
-                    }
-                    if (qrBitmap != null) {
-                        androidx.compose.foundation.layout.Box(
-                            modifier = Modifier.fillMaxWidth(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Image(bitmap = qrBitmap.asImageBitmap(), contentDescription = "Wi-Fi QR")
+                    val qrBitmap = remember(wifiQrText) { generateQrCodeBitmap(wifiQrText, 256) }
+                    val linkUrl = remember(urlHost) { "http://$urlHost:$port" }
+                    val linkQrBitmap = remember(linkUrl) { generateQrCodeBitmap(linkUrl, 256) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            if (qrBitmap != null) {
+                                Image(
+                                    bitmap = qrBitmap.asImageBitmap(),
+                                    contentDescription = "Wi‑Fi QR",
+                                    modifier = Modifier.size(196.dp)
+                                )
+                            }
+                            Text("Wi‑Fi QR")
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            if (linkQrBitmap != null) {
+                                Image(
+                                    bitmap = linkQrBitmap.asImageBitmap(),
+                                    contentDescription = "Open link QR",
+                                    modifier = Modifier.size(196.dp)
+                                )
+                            }
+                            Text("Open link QR")
                         }
                     }
                     Text("Send message", style = MaterialTheme.typography.titleSmall)
@@ -183,7 +204,7 @@ class MainActivity : ComponentActivity() {
                     if (connectedDevices.isNotEmpty()) {
                         Text("Connected devices", style = MaterialTheme.typography.titleSmall)
                         for (c in connectedDevices) {
-                            androidx.compose.foundation.layout.Row(
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
@@ -198,7 +219,7 @@ class MainActivity : ComponentActivity() {
                     for (m in inboundMessages) {
                         Text(m, style = MaterialTheme.typography.bodySmall)
                     }
-                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(8.dp))
+                    Spacer(modifier = Modifier.size(8.dp))
                     Button(onClick = {
                         isWorking = true
                         workingText = "Stopping server…"
@@ -212,7 +233,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             } else {
-                androidx.compose.foundation.layout.Column(
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
