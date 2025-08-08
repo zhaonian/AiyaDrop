@@ -23,7 +23,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -70,12 +72,13 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
     @Composable
     private fun ServerScaffold() {
         var started by remember { mutableStateOf(false) }
         var ssid by remember { mutableStateOf("") }
         var password by remember { mutableStateOf("") }
-        var urlHost by remember { mutableStateOf("192.168.43.1") }
+        var urlHost by remember { mutableStateOf("192.168.1.113") }
         var isWorking by remember { mutableStateOf(false) }
         var workingText by remember { mutableStateOf("") }
         var connectedDevices by remember { mutableStateOf(setOf<ClientInfo>()) }
@@ -126,16 +129,9 @@ class MainActivity : ComponentActivity() {
                         .fillMaxSize()
                         .padding(innerPadding),
                     verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .padding(horizontal = 24.dp)
-                            .fillMaxWidth()
-                            .size(height = 8.dp, width = 0.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                    ContainedLoadingIndicator(modifier = Modifier.size(72.dp))
                     Spacer(modifier = Modifier.size(16.dp))
                     Text(workingText.ifBlank { "Working…" })
                 }
