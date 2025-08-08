@@ -1,49 +1,47 @@
 package io.zluan.aiyadrop
 
 import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
-import android.net.wifi.WifiManager
-import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.foundation.Image
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import io.zluan.aiyadrop.ui.theme.AiyaDropTheme
-import java.io.File
-import java.net.Inet4Address
-import java.net.NetworkInterface
+import androidx.core.graphics.createBitmap
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
-import android.graphics.Bitmap
-import android.graphics.Color
+import io.zluan.aiyadrop.ui.theme.AiyaDropTheme
+import java.io.File
+import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity() {
     private var webServer: LocalWebServer? = null
@@ -282,7 +280,7 @@ private fun generateQrCodeBitmap(text: String, size: Int): Bitmap? {
                 pixels[offset + x] = if (bitMatrix.get(x, y)) Color.BLACK else Color.WHITE
             }
         }
-        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+        createBitmap(width, height).apply {
             setPixels(pixels, 0, width, 0, 0, width, height)
         }
     } catch (_: Throwable) {
