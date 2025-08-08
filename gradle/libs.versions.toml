@@ -31,6 +31,7 @@ androidx-material3 = { group = "androidx.compose.material3", name = "material3",
  ktor-server-cio = { group = "io.ktor", name = "ktor-server-cio", version.ref = "ktor" }
  ktor-server-content-negotiation = { group = "io.ktor", name = "ktor-server-content-negotiation", version.ref = "ktor" }
  ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ ktor-server-websockets = { group = "io.ktor", name = "ktor-server-websockets", version.ref = "ktor" }
  zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 [plugins]

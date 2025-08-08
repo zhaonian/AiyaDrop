@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -74,6 +75,9 @@ class MainActivity : ComponentActivity() {
         var urlHost by remember { mutableStateOf("192.168.43.1") }
         var isWorking by remember { mutableStateOf(false) }
         var workingText by remember { mutableStateOf("") }
+        var connectedDevices by remember { mutableStateOf(setOf<ClientInfo>()) }
+        var outboundText by remember { mutableStateOf("") }
+        var inboundMessages by remember { mutableStateOf(listOf<String>()) }
         val port = 8765
         val dir = File(cacheDir, "aiyadrop").apply { mkdirs() }
 
@@ -84,7 +88,18 @@ class MainActivity : ComponentActivity() {
                     ssid = s
                     password = p
                     findHotspotIpAddress()?.let { urlHost = it }
-                    startServerIfNeeded(dir, port)
+                    startServerIfNeeded(dir, port,
+                        onNewClient = { info ->
+                        this@MainActivity.runOnUiThread {
+                            connectedDevices = connectedDevices + info
+                        }
+                        },
+                        onClientMessage = { fromIp, text ->
+                            this@MainActivity.runOnUiThread {
+                                inboundMessages = inboundMessages + "$fromIp: $text"
+                            }
+                        }
+                    )
                     started = true
                     isWorking = false
                 }
@@ -152,6 +167,37 @@ class MainActivity : ComponentActivity() {
                             Image(bitmap = qrBitmap.asImageBitmap(), contentDescription = "Wi-Fi QR")
                         }
                     }
+                    Text("Send message", style = MaterialTheme.typography.titleSmall)
+                    OutlinedTextField(
+                        value = outboundText,
+                        onValueChange = { outboundText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Message to send") }
+                    )
+                    Button(onClick = {
+                        for (c in connectedDevices) {
+                            webServer?.sendMessageTo(c.ip, outboundText)
+                        }
+                    }, enabled = connectedDevices.isNotEmpty() && outboundText.isNotBlank()) { Text("Send to all connected") }
+
+                    if (connectedDevices.isNotEmpty()) {
+                        Text("Connected devices", style = MaterialTheme.typography.titleSmall)
+                        for (c in connectedDevices) {
+                            androidx.compose.foundation.layout.Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text("${c.ip} ${c.userAgent ?: ""}", style = MaterialTheme.typography.bodySmall)
+                                Button(onClick = {
+                                    webServer?.sendMessageTo(c.ip, outboundText)
+                                }, enabled = outboundText.isNotBlank()) { Text("Send") }
+                            }
+                        }
+                    }
+                    Text("Messages from devices", style = MaterialTheme.typography.titleSmall)
+                    for (m in inboundMessages) {
+                        Text(m, style = MaterialTheme.typography.bodySmall)
+                    }
                     androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(8.dp))
                     Button(onClick = {
                         isWorking = true
@@ -159,6 +205,7 @@ class MainActivity : ComponentActivity() {
                         stopHotspotAndServer()
                         started = false
                         ssid = ""; password = ""
+                        connectedDevices = emptySet()
                         isWorking = false
                     }) {
                         Text("Stop server")
@@ -181,7 +228,20 @@ class MainActivity : ComponentActivity() {
                             startHotspotAndServer(onHotspot = { s, p ->
                                 ssid = s; password = p; started = true
                                 isWorking = false
-                            }, dir = dir, port = port)
+                            },
+                                dir = dir,
+                                port = port,
+                                onNewClient = { info ->
+                                    this@MainActivity.runOnUiThread {
+                                        connectedDevices = connectedDevices + info
+                                    }
+                                },
+                                onClientMessage = { fromIp, text ->
+                                    this@MainActivity.runOnUiThread {
+                                        inboundMessages = inboundMessages + "$fromIp: $text"
+                                    }
+                                }
+                            )
                         } else {
                             isWorking = true
                             workingText = "Starting hotspot and server…"
@@ -195,9 +255,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startServerIfNeeded(dir: File, port: Int) {
+    private fun startServerIfNeeded(
+        dir: File,
+        port: Int,
+        onNewClient: (ClientInfo) -> Unit = {},
+        onClientMessage: (String, String) -> Unit = { _, _ -> }
+    ) {
         if (webServer == null) {
-            webServer = LocalWebServer(port, dir).also { it.start() }
+            val html = try {
+                assets.open("index.html").bufferedReader().use { it.readText() }
+            } catch (_: Throwable) { null }
+            webServer = LocalWebServer(port, dir, onNewClient, onClientMessage, html).also { it.start() }
         }
     }
 
@@ -218,10 +286,16 @@ class MainActivity : ComponentActivity() {
     private fun hasAllPermissions(perms: Array<String>): Boolean =
         perms.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
-    private fun startHotspotAndServer(onHotspot: ((String, String) -> Unit)? = null, dir: File = File(cacheDir, "aiyadrop").apply { mkdirs() }, port: Int = 8765) {
+    private fun startHotspotAndServer(
+        onHotspot: ((String, String) -> Unit)? = null,
+        dir: File = File(cacheDir, "aiyadrop").apply { mkdirs() },
+        port: Int = 8765,
+        onNewClient: (ClientInfo) -> Unit = {},
+        onClientMessage: (String, String) -> Unit = { _, _ -> }
+    ) {
         startLocalOnlyHotspot { s, p ->
             onHotspot?.invoke(s, p)
-            startServerIfNeeded(dir, port)
+            startServerIfNeeded(dir, port, onNewClient, onClientMessage)
         }
     }
 

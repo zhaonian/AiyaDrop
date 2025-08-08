@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AiyaDrop</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Roboto, Arial, sans-serif; margin: 24px; }
+    #files { margin-top: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+    .thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; background: #eee; }
+    input, button { pointer-events: auto; }
+  </style>
+</head>
+<body>
+  <h2>AiyaDrop</h2>
+  <form id="uploadForm" method="post">
+    <input id="fileInput" type="file" accept="image/*" />
+    <input id="nameInput" type="text" placeholder="Optional file name" />
+    <button type="submit">Upload</button>
+  </form>
+  <div id="files"></div>
+  <h3>Messages</h3>
+  <div id="messages" style="min-height:48px;padding:8px;border:1px solid #ddd;border-radius:8px;"></div>
+  <div style="margin:8px 0;color:#666;">You are: <span id="whoami">(loading...)</span></div>
+  <h3>Send message to app</h3>
+  <div class="row">
+    <input id="sendInput" type="text" placeholder="Type message" autocomplete="off" tabindex="0" style="flex:1;font-size:16px;padding:8px;" />
+    <button id="sendBtn" type="button">Send</button>
+  </div>
+  <script>
+    let ws;
+    function _log(msg){ try{ const root = document.getElementById('messages'); const p=document.createElement('div'); p.textContent='[client] '+String(msg); root.appendChild(p);}catch(e){} }
+    async function refresh(){
+      _log('refresh /list');
+      const res = await fetch('/list');
+      const names = await res.json();
+      const root = document.getElementById('files');
+      root.innerHTML='';
+      for(const n of names){
+        const row = document.createElement('div');
+        row.className='row';
+        const img = document.createElement('img');
+        img.className='thumb';
+        img.src='/files/'+encodeURIComponent(n);
+        const a = document.createElement('a');
+        a.href='/files/'+encodeURIComponent(n);
+        a.textContent=n;
+        a.download=n;
+        row.appendChild(img);
+        row.appendChild(a);
+        root.appendChild(row);
+      }
+    }
+    async function whoami(){
+      _log('whoami start');
+      try{
+        const res = await fetch('/whoami');
+        const data = await res.json();
+        _log('whoami resp '+JSON.stringify(data));
+        document.getElementById('whoami').textContent = (data && data.ip) ? data.ip : '(unknown)';
+      }catch(e){ document.getElementById('whoami').textContent = '(error)'; }
+    }
+    // No polling; WebSocket is the transport
+    function connectWs(){
+      try{
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(proto+'://'+location.host+'/ws');
+        ws.onopen = ()=> _log('ws open');
+        ws.onmessage = (ev)=>{ _log('ws msg '+ev.data); const root=document.getElementById('messages'); const p=document.createElement('div'); p.textContent=String(ev.data); root.appendChild(p); };
+        ws.onclose = ()=>{ _log('ws close'); setTimeout(connectWs, 2000); };
+        ws.onerror = (e)=> _log('ws error');
+      }catch(e){ _log('ws fail '+e); }
+    }
+    function doSend(){
+      const input = document.getElementById('sendInput');
+      const v = String(input.value || '').trim();
+      _log('click send text="'+v+'"');
+      if(!v){ _log('empty text'); return; }
+      if(ws && ws.readyState === WebSocket.OPEN){ ws.send(v); const root=document.getElementById('messages'); const p=document.createElement('div'); p.textContent='You: '+v; root.appendChild(p); input.value=''; return; }
+      _log('ws not open; message not sent');
+    }
+    document.getElementById('sendBtn').addEventListener('click', doSend);
+    document.getElementById('sendInput').addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); doSend(); }});
+    setTimeout(()=>{ try{ document.getElementById('sendInput').focus(); }catch(e){} }, 100);
+    refresh(); whoami();
+    connectWs();
+  </script>
+</body>
+</html>
+
