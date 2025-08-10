@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -49,6 +50,8 @@ class LocalWebServer(
     private val socketsByIp = ConcurrentHashMap<String, MutableSet<io.ktor.websocket.DefaultWebSocketSession>>()
     private val wsJob: Job = Job()
     private val wsScope: CoroutineScope = CoroutineScope(wsJob + Dispatchers.IO)
+    private val pendingUploadMetaByIp = ConcurrentHashMap<String, ImageMeta>()
+    private val pendingUploadBatchByIp = ConcurrentHashMap<String, ReceivedBatchState>()
 
     fun start() {
         if (engine != null) return
@@ -76,7 +79,16 @@ class LocalWebServer(
             get("/list") {
                 debugLogCall("/list", call)
                 recordClient(call)
-                val names = storageDir.listFiles()?.sortedBy { it.name }?.map { it.name } ?: emptyList()
+                val ip = normalizeIp(call.request.local.remoteAddress)
+                val since = ip?.let { knownClients[it]?.connectedAt } ?: 0L
+                val names = storageDir
+                    .listFiles()
+                    ?.asSequence()
+                    ?.let { seq -> if (since > 0L) seq.filter { it.lastModified() >= since } else seq }
+                    ?.sortedBy { it.name }
+                    ?.map { it.name }
+                    ?.toList()
+                    ?: emptyList()
                 call.respondText(Json.encodeToString(names), ContentType.Application.Json)
             }
             get("/whoami") {
@@ -107,7 +119,76 @@ class LocalWebServer(
                             is Frame.Text -> {
                                 val text = frame.readText()
                                 Log.d("AiyaDrop", "ws recv from $ip: $text")
-                                onClientMessage?.invoke(ip, text)
+                                if (text.startsWith(IMAGE_BATCH_META_PREFIX)) {
+                                    val json = text.removePrefix(IMAGE_BATCH_META_PREFIX)
+                                    try {
+                                        val meta = Json.decodeFromString<ImageBatchMeta>(json)
+                                        if (meta.items.isNotEmpty()) {
+                                            pendingUploadBatchByIp[ip] = ReceivedBatchState(meta.items)
+                                            Log.d("AiyaDrop", "image batch meta from $ip: ${meta.items.size} items")
+                                        }
+                                    } catch (t: Throwable) {
+                                        Log.d("AiyaDrop", "bad image batch meta from $ip: ${t.message}")
+                                    }
+                                } else if (text.startsWith(IMAGE_META_PREFIX)) {
+                                    val json = text.removePrefix(IMAGE_META_PREFIX)
+                                    try {
+                                        val meta = Json.decodeFromString<ImageMeta>(json)
+                                        pendingUploadMetaByIp[ip] = meta
+                                        Log.d("AiyaDrop", "image meta from $ip: $meta")
+                                    } catch (t: Throwable) {
+                                        Log.d("AiyaDrop", "bad image meta from $ip: ${t.message}")
+                                    }
+                                } else {
+                                    onClientMessage?.invoke(ip, text)
+                                }
+                            }
+                            is Frame.Binary -> {
+                                val data = frame.data
+                                val batch = pendingUploadBatchByIp[ip]
+                                if (batch != null) {
+                                    val idx = batch.index
+                                    if (idx >= 0 && idx < batch.metas.size) {
+                                        val meta = batch.metas[idx]
+                                        try {
+                                        val desired = meta.name.ifBlank { System.currentTimeMillis().toString() + ".bin" }
+                                        val finalName = uniqueName(desired)
+                                        File(storageDir, finalName).writeBytes(data)
+                                            Log.d("AiyaDrop", "saved batch[$idx] from $ip -> $finalName (${data.size} bytes)")
+                                            batch.savedNames.add(finalName)
+                                            batch.index = idx + 1
+                                            if (batch.index >= batch.metas.size) {
+                                                pendingUploadBatchByIp.remove(ip)
+                                                val ack = IMAGE_BATCH_SAVED_PREFIX + Json.encodeToString(ImageBatchSavedAck(names = batch.savedNames.toList()))
+                                                sendMessageTo(ip, ack)
+                                            }
+                                        } catch (t: Throwable) {
+                                            Log.d("AiyaDrop", "failed saving batch[$idx] from $ip: ${t.message}")
+                                            pendingUploadBatchByIp.remove(ip)
+                                            sendMessageTo(ip, IMAGE_ERROR_PREFIX + (t.message ?: "error"))
+                                        }
+                                    } else {
+                                        Log.d("AiyaDrop", "binary frame out-of-range for batch from $ip; dropping and clearing batch")
+                                        pendingUploadBatchByIp.remove(ip)
+                                    }
+                                } else {
+                                    val meta = pendingUploadMetaByIp.remove(ip)
+                                    if (meta != null) {
+                                        try {
+                                            val desired = meta.name.ifBlank { System.currentTimeMillis().toString() + ".bin" }
+                                            val finalName = uniqueName(desired)
+                                            File(storageDir, finalName).writeBytes(data)
+                                            Log.d("AiyaDrop", "saved image from $ip -> $finalName (${data.size} bytes)")
+                                            // Acknowledge back to sender
+                                            sendMessageTo(ip, IMAGE_SAVED_PREFIX + Json.encodeToString(ImageSavedAck(name = finalName, size = data.size)))
+                                        } catch (t: Throwable) {
+                                            Log.d("AiyaDrop", "failed saving image from $ip: ${t.message}")
+                                            sendMessageTo(ip, IMAGE_ERROR_PREFIX + (t.message ?: "error"))
+                                        }
+                                    } else {
+                                        Log.d("AiyaDrop", "binary frame with no meta from $ip: ${data.size} bytes; ignored")
+                                    }
+                                }
                             }
                             else -> {}
                         }
@@ -138,7 +219,7 @@ class LocalWebServer(
                 val filename = params["filename"]
                 val base64 = params["base64"]
                 val bytes: ByteArray? = base64?.let { Base64.decode(it, Base64.DEFAULT) }
-                val finalName = safeName(
+                val finalName = uniqueName(
                     filename ?: (System.currentTimeMillis().toString() + ".bin")
                 )
                 if (bytes == null) return@post call.respondText("Missing file", status = io.ktor.http.HttpStatusCode.BadRequest)
@@ -207,6 +288,54 @@ class LocalWebServer(
             sessions.toList().forEach { session ->
                 wsScope.launch {
                     try { session.send(frame) } catch (t: Throwable) { Log.d("AiyaDrop", "ws send fail to $ip: ${t.message}") }
+                }
+            }
+        }
+    }
+
+    fun sendImageTo(ip: String, fileName: String, bytes: ByteArray, mime: String? = null) {
+        val sessions = socketsByIp[ip]
+        if (sessions.isNullOrEmpty()) {
+            Log.d("AiyaDrop", "no ws session for $ip; image not sent")
+            return
+        }
+        val meta = ImageMeta(name = fileName, mime = mime, size = bytes.size.toLong())
+        val metaText = IMAGE_META_PREFIX + Json.encodeToString(meta)
+        val frameText = Frame.Text(metaText)
+        val frameBin = Frame.Binary(true, bytes)
+        sessions.toList().forEach { session ->
+            wsScope.launch {
+                try {
+                    session.send(frameText)
+                    session.send(frameBin)
+                    Log.d("AiyaDrop", "sent image to $ip -> $fileName (${bytes.size} bytes)")
+                } catch (t: Throwable) {
+                    Log.d("AiyaDrop", "ws send image fail to $ip: ${t.message}")
+                }
+            }
+        }
+    }
+
+    fun sendImagesTo(ip: String, items: List<OutgoingImage>) {
+        val sessions = socketsByIp[ip]
+        if (sessions.isNullOrEmpty()) {
+            Log.d("AiyaDrop", "no ws session for $ip; images not sent")
+            return
+        }
+        if (items.isEmpty()) return
+        val metas = items.map { ImageMeta(name = it.name, mime = it.mime, size = it.bytes.size.toLong()) }
+        val batchText = IMAGE_BATCH_META_PREFIX + Json.encodeToString(ImageBatchMeta(items = metas))
+        val frameText = Frame.Text(batchText)
+        sessions.toList().forEach { session ->
+            wsScope.launch {
+                try {
+                    session.send(frameText)
+                    for (it in items) {
+                        session.send(Frame.Binary(true, it.bytes))
+                    }
+                    Log.d("AiyaDrop", "sent image batch to $ip -> ${items.size} items")
+                } catch (t: Throwable) {
+                    Log.d("AiyaDrop", "ws send image batch fail to $ip: ${t.message}")
                 }
             }
         }
@@ -328,6 +457,61 @@ class LocalWebServer(
     """.trimIndent()
 
     private fun safeName(input: String): String = input.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
+    private fun uniqueName(desiredInput: String): String {
+        val desired = safeName(desiredInput.ifBlank { System.currentTimeMillis().toString() + ".bin" })
+        val dot = desired.lastIndexOf('.')
+        val base = if (dot > 0) desired.substring(0, dot) else desired
+        val ext = if (dot > 0) desired.substring(dot) else ""
+        var candidate = desired
+        var idx = 1
+        while (File(storageDir, candidate).exists()) {
+            candidate = "$base ($idx)$ext"
+            idx++
+            if (idx > 10_000) break
+        }
+        return candidate
+    }
 }
+
+@Serializable
+data class ImageMeta(
+    val name: String,
+    val mime: String? = null,
+    val size: Long? = null
+)
+
+@Serializable
+data class ImageBatchMeta(
+    val items: List<ImageMeta>
+)
+
+@Serializable
+data class ImageSavedAck(
+    val name: String,
+    val size: Int
+)
+
+@Serializable
+data class ImageBatchSavedAck(
+    val names: List<String>
+)
+
+data class OutgoingImage(
+    val name: String,
+    val bytes: ByteArray,
+    val mime: String? = null
+)
+
+private data class ReceivedBatchState(
+    val metas: List<ImageMeta>,
+    val savedNames: MutableList<String> = mutableListOf(),
+    var index: Int = 0
+)
+
+private const val IMAGE_META_PREFIX = "__IMG_META__:"
+private const val IMAGE_SAVED_PREFIX = "__IMG_SAVED__:"
+private const val IMAGE_ERROR_PREFIX = "__IMG_ERROR__:"
+private const val IMAGE_BATCH_META_PREFIX = "__IMG_BATCH_META__:"
+private const val IMAGE_BATCH_SAVED_PREFIX = "__IMG_BATCH_SAVED__:"
 
 

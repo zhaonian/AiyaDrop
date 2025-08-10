@@ -98,6 +98,11 @@
     .muted { color: var(--muted); font-size: 14px; }
     .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 12px; }
     .file-row { display:flex; align-items:center; gap:10px; padding:8px; border:1px solid var(--border); border-radius:10px; }
+    /* Use grid here for iPad/Safari to avoid flex-gap/overlap issues */
+    .pending { display:grid; grid-template-columns: repeat(auto-fill, 72px); grid-auto-rows: 72px; gap: 10px; margin-top: 8px; }
+    .pending-item { position: relative; width: 72px; height: 72px; }
+    .pending-item .thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .remove-btn { position:absolute; top:-6px; right:-6px; width:22px; height:22px; border-radius:50%; background:#ef4444; color:#fff; border:none; cursor:pointer; font-size:14px; line-height:22px; text-align:center; z-index:1; }
   </style>
 </head>
 <body>
@@ -111,13 +116,24 @@
       <div class="section-title">Upload a file</div>
       <div class="stack">
         <form id="uploadForm" class="row" method="post">
-          <input id="fileInput" class="sr-only" type="file" accept="image/*" aria-label="Choose file" />
-          <label for="fileInput" class="btn" aria-label="Choose file">Choose file</label>
+          <label class="btn" aria-label="Choose photos/videos" role="button" tabindex="0">
+            Choose photos/videos
+            <input id="fileInput" class="sr-only" type="file" accept="image/*,video/*" multiple aria-hidden="true" />
+          </label>
+          <label class="btn" aria-label="Browse files" role="button" tabindex="0">
+            Browse files
+            <input id="fileInputAny" class="sr-only" type="file" multiple aria-hidden="true" />
+          </label>
           <span id="fileName" class="muted" style="min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
-          <input id="nameInput" type="text" placeholder="Optional file name" aria-label="File name" />
+          <input id="nameInput" type="text" placeholder="Optional file name (first file)" aria-label="File name" />
           <button type="submit" aria-label="Upload">Upload</button>
+          <button id="sendWsBtn" type="button" aria-label="Send via WebSocket">Send via WS</button>
         </form>
-        <div id="files" class="files"></div>
+        <div id="pendingWrap" class="stack" style="display:none;">
+          <div class="muted">Pending attachments</div>
+          <div id="pendingList" class="pending"></div>
+        </div>
+        <div id="files" class="files" style="display:none;"></div>
       </div>
     </section>
 
@@ -133,28 +149,74 @@
   </div>
   <script>
     let ws;
-    function _log(msg){ try{ const root = document.getElementById('messages'); const p=document.createElement('div'); p.className='muted'; p.textContent='[client] '+String(msg); root.appendChild(p);}catch(e){} }
-    async function refresh(){
-      _log('refresh /list');
-      const res = await fetch('/list');
-      const names = await res.json();
-      const root = document.getElementById('files');
-      root.innerHTML='';
-      for(const n of names){
-        const row = document.createElement('div');
-        row.className='file-row';
-        const img = document.createElement('img');
-        img.className='thumb';
-        img.src='/files/'+encodeURIComponent(n);
-        const a = document.createElement('a');
-        a.href='/files/'+encodeURIComponent(n);
-        a.textContent=n;
-        a.download=n;
-        row.appendChild(img);
-        row.appendChild(a);
-        root.appendChild(row);
+    const IMAGE_META_PREFIX = '__IMG_META__:';
+    const IMAGE_SAVED_PREFIX = '__IMG_SAVED__:';
+    const IMAGE_ERROR_PREFIX = '__IMG_ERROR__:';
+    const IMAGE_BATCH_META_PREFIX = '__IMG_BATCH_META__:';
+    const IMAGE_BATCH_SAVED_PREFIX = '__IMG_BATCH_SAVED__:';
+    let pendingRecvImageMeta = null;
+    let pendingBatchMetas = null;
+    let pendingBatchIndex = 0;
+    let pendingFiles = [];
+
+    function renderPending(){
+      const root = document.getElementById('pendingList');
+      const wrap = document.getElementById('pendingWrap');
+      root.innerHTML = '';
+      wrap.style.display = pendingFiles.length ? 'block' : 'none';
+      for(const pf of pendingFiles){
+        const div = document.createElement('div');
+        div.className = 'pending-item';
+        const img = document.createElement('img'); img.className='thumb'; img.src = pf.url; img.alt = pf.name;
+        const btn = document.createElement('button'); btn.type='button'; btn.className='remove-btn'; btn.textContent='×';
+        btn.addEventListener('click', ()=>{
+          try{ URL.revokeObjectURL(pf.url); }catch(_){ }
+          pendingFiles = pendingFiles.filter(x=>x.id!==pf.id);
+          renderPending();
+          const label = pendingFiles.length ? (pendingFiles.length===1 ? pendingFiles[0].name : (pendingFiles.length+' files selected')) : '';
+          document.getElementById('fileName').textContent = label;
+        });
+        div.appendChild(img); div.appendChild(btn);
+        root.appendChild(div);
       }
     }
+    function addFilesFromList(fileList){
+      const files = Array.from(fileList || []).filter(Boolean);
+      if(!files.length){ return; }
+      const beforeCount = pendingFiles.length;
+      for(const f of files){
+        const id = Math.random().toString(36).slice(2);
+        const name = (f && f.name) ? f.name : 'photo';
+        const mime = (f && f.type) ? f.type : undefined;
+        const size = (f && typeof f.size === 'number') ? f.size : 0;
+        try{
+          const reader = new FileReader();
+          reader.onload = ()=>{
+            try{
+              const url = String(reader.result || '');
+              pendingFiles.push({ id, file: f, name, size, mime, url });
+              renderPending();
+              const label = pendingFiles.length ? (pendingFiles.length === 1 ? pendingFiles[0].name : (pendingFiles.length+' files selected')) : '';
+              document.getElementById('fileName').textContent = label;
+              if(pendingFiles.length){ const nameInput = document.getElementById('nameInput'); if(!nameInput.value) nameInput.value = pendingFiles[0].name; }
+            }catch(_){ }
+          };
+          reader.onerror = ()=>{
+            _log('preview read error: '+(reader.error ? reader.error.message : 'unknown')+'; falling back to object URL');
+            try{
+              const url = URL.createObjectURL(f);
+              pendingFiles.push({ id, file: f, name, size, mime, url });
+              renderPending();
+            }catch(_){ }
+          };
+          reader.readAsDataURL(f);
+        }catch(e){ _log('file read setup failed: '+e); }
+      }
+      _log('selected '+files.length+' file(s)');
+      try{ document.getElementById('pendingWrap').scrollIntoView({behavior:'smooth', block:'nearest'}); }catch(_){ }
+    }
+    function _log(msg){ try{ const root = document.getElementById('messages'); const p=document.createElement('div'); p.className='muted'; p.textContent='[client] '+String(msg); root.appendChild(p);}catch(e){} }
+    async function refresh(){ /* disabled for privacy: do not list device files */ }
     async function whoami(){
       _log('whoami start');
       try{
@@ -170,7 +232,65 @@
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         ws = new WebSocket(proto+'://'+location.host+'/ws');
         ws.onopen = ()=> { _log('ws open'); setWsState(true); };
-        ws.onmessage = (ev)=>{ const root=document.getElementById('messages'); const p=document.createElement('div'); p.className='msg'; p.textContent=String(ev.data); root.appendChild(p); };
+        ws.onmessage = (ev)=>{
+          const root=document.getElementById('messages');
+          if (typeof ev.data === 'string') {
+            const text = String(ev.data);
+            if (text.startsWith(IMAGE_BATCH_META_PREFIX)) {
+              try {
+                const meta = JSON.parse(text.slice(IMAGE_BATCH_META_PREFIX.length));
+                if (meta && Array.isArray(meta.items) && meta.items.length) {
+                  pendingBatchMetas = meta.items;
+                  pendingBatchIndex = 0;
+                }
+              } catch(_) {}
+              return;
+            }
+            if (text.startsWith(IMAGE_BATCH_SAVED_PREFIX)) {
+              const info = text.slice(IMAGE_BATCH_SAVED_PREFIX.length);
+              const p=document.createElement('div'); p.className='msg'; p.textContent='Batch saved: '+info; root.appendChild(p);
+              pendingBatchMetas = null; pendingBatchIndex = 0;
+              setTimeout(refresh, 250);
+              return;
+            }
+            if (text.startsWith(IMAGE_META_PREFIX)) {
+              try { pendingRecvImageMeta = JSON.parse(text.slice(IMAGE_META_PREFIX.length)); }
+              catch(_) { pendingRecvImageMeta = null; }
+              return;
+            }
+            if (text.startsWith(IMAGE_SAVED_PREFIX)) {
+              const info = text.slice(IMAGE_SAVED_PREFIX.length);
+              const p=document.createElement('div'); p.className='msg'; p.textContent='Saved: '+info; root.appendChild(p);
+              // listing disabled for privacy
+              return;
+            }
+            if (text.startsWith(IMAGE_ERROR_PREFIX)) {
+              const info = text.slice(IMAGE_ERROR_PREFIX.length);
+              const p=document.createElement('div'); p.className='msg'; p.textContent='Image error: '+info; root.appendChild(p);
+              return;
+            }
+            const p=document.createElement('div'); p.className='msg'; p.textContent=text; root.appendChild(p);
+          } else {
+            // Binary
+            const blob = ev.data instanceof Blob ? ev.data : new Blob([ev.data]);
+            const url = URL.createObjectURL(blob);
+            const name = (pendingBatchMetas && pendingBatchMetas[pendingBatchIndex] && pendingBatchMetas[pendingBatchIndex].name)
+              || (pendingRecvImageMeta && pendingRecvImageMeta.name)
+              || 'image';
+            const row = document.createElement('div'); row.className='file-row';
+            const img = document.createElement('img'); img.className='thumb'; img.src=url;
+            const a = document.createElement('a'); a.href=url; a.textContent=name+" (unsaved preview)"; a.download=name;
+            row.appendChild(img); row.appendChild(a);
+            root.appendChild(row);
+            pendingRecvImageMeta = null;
+            if (pendingBatchMetas) {
+              pendingBatchIndex++;
+              if (pendingBatchIndex >= pendingBatchMetas.length) {
+                pendingBatchMetas = null; pendingBatchIndex = 0;
+              }
+            }
+          }
+        };
         ws.onclose = ()=>{ _log('ws close'); setWsState(false); setTimeout(connectWs, 2000); };
         ws.onerror = (e)=> { _log('ws error'); setWsState(false); };
       }catch(e){ _log('ws fail '+e); }
@@ -185,13 +305,99 @@
     }
     document.getElementById('sendBtn').addEventListener('click', doSend);
     document.getElementById('sendInput').addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); doSend(); }});
-    document.getElementById('fileInput').addEventListener('change', (e)=>{
-      const el = e.target; const name = el && el.files && el.files[0] ? el.files[0].name : '';
-      document.getElementById('fileName').textContent = name || '';
-      if(name){ const nameInput = document.getElementById('nameInput'); if(!nameInput.value) nameInput.value = name; }
+    const fileInputEl = document.getElementById('fileInput');
+    const fileInputAnyEl = document.getElementById('fileInputAny');
+    fileInputEl.addEventListener('input', (e)=>{
+      const el = e.target;
+      const files = (el && el.files) ? el.files : null;
+      if (files && files.length) { addFilesFromList(files); }
+      else { _log('file input change fired, but no files found'); }
+      // iOS Safari/Chrome often ignore programmatic reset; do not clear value here
+    });
+    fileInputAnyEl.addEventListener('input', (e)=>{
+      const el = e.target;
+      const files = (el && el.files) ? el.files : null;
+      if (files && files.length) { addFilesFromList(files); }
+      else { _log('file input (any) change fired, but no files found'); }
+    });
+    // The input is now nested inside the label, so a click opens it on iOS too
+    // Drag & drop support to add files (may not work on iOS, but harmless)
+    const uploadForm = document.getElementById('uploadForm');
+    ;['dragenter','dragover'].forEach(type=>uploadForm.addEventListener(type, (ev)=>{ ev.preventDefault(); ev.stopPropagation(); }, false));
+    ;['dragleave','drop'].forEach(type=>uploadForm.addEventListener(type, (ev)=>{ ev.preventDefault(); ev.stopPropagation(); if(type==='drop'){ const dt = ev.dataTransfer; if(dt){ const files = dt.files || []; addFilesFromList(files); } } }, false));
+    // iPad/iOS: support pasting images from clipboard into the page
+    document.addEventListener('paste', (ev)=>{
+      try{
+        const items = ev.clipboardData && ev.clipboardData.items ? Array.from(ev.clipboardData.items) : [];
+        const files = items.map(it=> (it.kind==='file') ? it.getAsFile() : null).filter(Boolean);
+        if(files && files.length){ addFilesFromList(files); }
+      }catch(_){ }
+    });
+    document.getElementById('sendWsBtn').addEventListener('click', async ()=>{
+      try{
+        if(!ws || ws.readyState !== WebSocket.OPEN){ _log('ws not open; cannot send image'); return; }
+        let files = pendingFiles.length ? pendingFiles.map(x=>x.file) : [];
+        if(!files.length && fileInputEl.files && fileInputEl.files.length){ files = Array.from(fileInputEl.files); _log('fallback using raw input files: '+files.length); }
+        if(!files.length){ _log('no file selected'); return; }
+        if(files.length === 1){
+          const file = files[0];
+          const nameInput = document.getElementById('nameInput');
+          const name = String(nameInput.value || file.name || 'image');
+          const meta = { name, mime: file.type || undefined, size: file.size };
+          ws.send(IMAGE_META_PREFIX + JSON.stringify(meta));
+          const buf = await file.arrayBuffer();
+          ws.send(buf);
+          const root=document.getElementById('messages');
+          const p=document.createElement('div'); p.className='msg you'; p.textContent='You sent image: '+name+' ('+file.size+' bytes)'; root.appendChild(p);
+        } else {
+          const metas = files.map((f, i)=>({ name: (i===0 && document.getElementById('nameInput').value) ? document.getElementById('nameInput').value : (f.name || ('image_'+i)), mime: f.type || undefined, size: f.size }));
+          ws.send(IMAGE_BATCH_META_PREFIX + JSON.stringify({ items: metas }));
+          for(const f of files){
+            const buf = await f.arrayBuffer();
+            ws.send(buf);
+            await new Promise(r=>setTimeout(r)); // yield to keep order on older iOS
+          }
+          const root=document.getElementById('messages');
+          const p=document.createElement('div'); p.className='msg you'; p.textContent='You sent '+files.length+' files'; root.appendChild(p);
+        }
+        // clear pending after send
+        for(const pf of pendingFiles){ try{ URL.revokeObjectURL(pf.url); }catch(_){ } }
+        pendingFiles = []; renderPending();
+        document.getElementById('fileName').textContent = '';
+        // listing disabled for privacy
+      }catch(e){ _log('send image fail '+e); }
+    });
+
+    document.getElementById('uploadForm').addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      let files = pendingFiles.length ? pendingFiles.map(x=>x.file) : [];
+      if(!files.length && fileInputEl.files && fileInputEl.files.length){ files = Array.from(fileInputEl.files); _log('fallback using raw input files: '+files.length); }
+      if(!files.length){ _log('no file selected'); return; }
+      const root=document.getElementById('messages');
+      async function fileToBase64(file){
+        return await new Promise((res, rej)=>{ const fr=new FileReader(); fr.onload=()=>{ try{ const s=String(fr.result||''); res(s.split(',')[1]||''); }catch(err){ rej(err);} }; fr.onerror=rej; fr.readAsDataURL(file); });
+      }
+      try{
+        for(let i=0;i<files.length;i++){
+          const f = files[i];
+          const name = (i===0 && document.getElementById('nameInput').value) ? document.getElementById('nameInput').value : (f.name || ('image_'+i));
+          const base64 = await fileToBase64(f);
+          const body = new URLSearchParams();
+          body.set('filename', name);
+          body.set('base64', base64);
+          const r = await fetch('/', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
+          if(!r.ok){ throw new Error('upload failed '+r.status); }
+        }
+        const p=document.createElement('div'); p.className='msg'; p.textContent='Uploaded '+files.length+' file(s)'; root.appendChild(p);
+        for(const pf of pendingFiles){ try{ URL.revokeObjectURL(pf.url); }catch(_){ } }
+        pendingFiles = []; renderPending();
+        document.getElementById('fileName').textContent = '';
+        (document.getElementById('nameInput').value='');
+        // listing disabled for privacy
+      }catch(err){ const p=document.createElement('div'); p.className='msg'; p.textContent='Upload error: '+err; root.appendChild(p); }
     });
     setTimeout(()=>{ try{ document.getElementById('sendInput').focus(); }catch(e){} }, 100);
-    refresh(); whoami();
+    whoami();
     connectWs();
 
     function setWsState(ok){

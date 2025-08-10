@@ -1,9 +1,11 @@
 package io.zluan.aiyadrop
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -32,6 +34,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +51,8 @@ import com.google.zxing.qrcode.QRCodeWriter
 import io.zluan.aiyadrop.ui.theme.AiyaDropTheme
 import java.io.File
 import java.net.NetworkInterface
+import java.net.URLEncoder
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private var webServer: LocalWebServer? = null
@@ -84,6 +89,8 @@ class MainActivity : ComponentActivity() {
         var connectedDevices by remember { mutableStateOf(setOf<ClientInfo>()) }
         var outboundText by remember { mutableStateOf("") }
         var inboundMessages by remember { mutableStateOf(listOf<String>()) }
+        var receivedFiles by remember { mutableStateOf(listOf<String>()) }
+        var sessionStartMs by remember { mutableStateOf(0L) }
         val port = 8765
         val dir = File(cacheDir, "aiyadrop").apply { mkdirs() }
 
@@ -106,6 +113,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     )
+                    sessionStartMs = System.currentTimeMillis()
                     started = true
                     isWorking = false
                 }
@@ -119,6 +127,22 @@ class MainActivity : ComponentActivity() {
             onDispose {
                 webServer?.stop(); webServer = null
                 hotspotReservation?.close(); hotspotReservation = null
+            }
+        }
+
+        // Periodically refresh received files while server is started
+        LaunchedEffect(started, sessionStartMs) {
+            while (started) {
+                try {
+                    val since = if (sessionStartMs > 0L) sessionStartMs else Long.MAX_VALUE
+                    val names = dir.listFiles()
+                        ?.filter { it.isFile && it.lastModified() >= since }
+                        ?.sortedWith(compareBy<File> { it.lastModified() }.thenBy { it.name })
+                        ?.map { it.name }
+                        ?: emptyList()
+                    if (names != receivedFiles) receivedFiles = names
+                } catch (_: Throwable) { }
+                delay(1200)
             }
         }
 
@@ -211,6 +235,20 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                    // Received images list
+                    if (receivedFiles.isNotEmpty()) {
+                        Text("Received images", style = MaterialTheme.typography.titleSmall)
+                        for (name in receivedFiles) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                val file = remember(name) { File(dir, name) }
+                                Text(name, style = MaterialTheme.typography.bodySmall)
+                                Button(onClick = { openLocalFile(file) }) { Text("Open") }
+                            }
+                        }
+                    }
                     Text("Messages from devices", style = MaterialTheme.typography.titleSmall)
                     for (m in inboundMessages) {
                         Text(m, style = MaterialTheme.typography.bodySmall)
@@ -221,8 +259,10 @@ class MainActivity : ComponentActivity() {
                         workingText = "Stopping server…"
                         stopHotspotAndServer()
                         started = false
+                        sessionStartMs = 0L
                         ssid = ""; password = ""
                         connectedDevices = emptySet()
+                        receivedFiles = emptyList()
                         isWorking = false
                     }) {
                         Text("Stop server")
@@ -243,7 +283,7 @@ class MainActivity : ComponentActivity() {
                             isWorking = true
                             workingText = "Starting hotspot and server…"
                             startHotspotAndServer(onHotspot = { s, p ->
-                                ssid = s; password = p; started = true
+                                ssid = s; password = p; sessionStartMs = System.currentTimeMillis(); started = true
                                 isWorking = false
                             },
                                 dir = dir,
@@ -353,6 +393,38 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             Toast.makeText(this, "Hotspot error: ${t.message}", Toast.LENGTH_SHORT).show()
         }
+    }
+}
+
+private fun MainActivity.openLocalFile(file: File) {
+    try {
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            this,
+            applicationContext.packageName + ".fileprovider",
+            file
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, guessMime(file.name))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        // Prefer system default handler without always showing chooser
+        try {
+            startActivity(intent)
+        } catch (_: Throwable) {
+            // Fallback to chooser if no default or none can handle
+            startActivity(Intent.createChooser(intent, "Open with"))
+        }
+    } catch (_: Throwable) { }
+}
+
+private fun guessMime(name: String): String {
+    val lower = name.lowercase()
+    return when {
+        lower.endsWith(".png") -> "image/png"
+        lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+        lower.endsWith(".gif") -> "image/gif"
+        lower.endsWith(".webp") -> "image/webp"
+        else -> "application/octet-stream"
     }
 }
 
